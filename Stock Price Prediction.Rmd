@@ -1,0 +1,414 @@
+---
+title: "EDA-Stock Market Data  --Yidan Li"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(quantmod)
+library(TTR)
+library(PerformanceAnalytics)
+library(IRdisplay)
+#get stock price of Microsoft, Macy's and Mastercard from 2007-01-01 till now
+getSymbols(c("MSFT","M","MA"),from='2007-01-01',to=Sys.Date())
+```
+```{r}
+head(MSFT)
+head(M)
+head(MA)
+```
+
+```{r}
+#split the data to train, test 
+#train dataset (2007-01-01 to 2016-12-31)
+MSFT1=subset(MSFT,index(MSFT)<='2016-12-31')
+M1=subset(M,index(M)<='2016-12-31')
+MA1=subset(MA,index(MA)<='2016-12-31')
+
+#test dataset (2017-01-01 till now)
+MSFT2=subset(MSFT,index(MSFT)>'2016-12-31')
+M2=subset(M,index(M)>'2016-12-31')
+MA2=subset(MA,index(MA)>'2016-12-31')
+
+```
+
+```{r}
+#plot technical charts of Microsoft at 2020
+# 1
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MSFT,subset = "2020::2020-09",bar.type='hlc', 
+            TA = c(addSMA(n=12,col="blue"),addSMA(n=26,col="red")),
+            theme = chartTheme("white"))  
+# 2
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MSFT, subset = "2020::2020-09",theme="white",  TA="addVo();addBBands();addCCI()") 
+
+# 3
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MSFT, subset = "2020::2020-09",
+            theme="white",  
+            TA="addVo();addBBands();addCCI();addRSI();
+                addTA(OpCl(MSFT),col='blue', type='h')  ")
+```
+
+```{r}
+#plot technical charts of Macy's at 2020
+# 1
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(M,subset = "2020::2020-09",bar.type='hlc', 
+            TA = c(addSMA(n=12,col="blue"),addSMA(n=26,col="red")),
+            theme = chartTheme("white"))  
+# 2
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(M, subset = "2020::2020-09",theme="white",  TA="addVo();addBBands();addCCI()") 
+
+# 3
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(M, subset = "2020::2020-09",
+            theme="white",  
+            TA="addVo();addBBands();addCCI();addRSI();
+                addTA(OpCl(M),col='blue', type='h')  ")
+```
+
+```{r}
+#plot technical charts of Mastercard at 2020
+# 1
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MA,subset = "2020::2020-09",bar.type='hlc', 
+            TA = c(addSMA(n=12,col="blue"),addSMA(n=26,col="red")),
+            theme = chartTheme("white"))  
+# 2
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MA, subset = "2020::2020-09",theme="white",  TA="addVo();addBBands();addCCI()") 
+
+# 3
+options(repr.plot.width = 6, repr.plot.height = 3)
+chartSeries(MA, subset = "2020::2020-09",
+            theme="white",  
+            TA="addVo();addBBands();addCCI();addRSI();
+                addTA(OpCl(MA),col='blue', type='h')  ")
+```
+
+```{r}
+#develop the strategies for microsoft
+macd <-MACD(MSFT$MSFT.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+rsi <-RSI(MSFT$MSFT.Adjusted,n=14,maType='SMA')
+cci <-CCI(MSFT$MSFT.Adjusted,n=14,maType='SMA')
+bbands <-BBands(MSFT$MSFT.Adjusted,n=20,maType='SMA',sd=2)
+
+#Strategy 1
+#if macd<signal and macd is negative (oversold), enter and stay, otherwise exit the market
+strategy1 <- ifelse ((macd$macd<macd$signal) & (macd$macd<0) , 1, 0)
+strategy1[is.na(strategy1)] <-0
+
+#Strategy 2
+#use macd and rsi, if oversold, enter and stay, otherwise exit the market
+strategy2 <- ifelse ((macd$macd<macd$signal) & (rsi$rsi<30),1,0)
+strategy2[is.na(strategy2)] <-0
+
+#Strategy 3
+#use macd and cci, if oversold, enter and stay, otherwise exit the market
+strategy3 <- ifelse ((macd$macd<macd$signal) &  (cci$cci< -100),1,0)
+strategy3[is.na(strategy3)] <-0
+
+#Strategy 4
+#use rsi and cci, if oversold, enter and stay, otherwise exit the market
+strategy4 <- ifelse ((rsi$rsi<30) &  (cci$cci< -100),1,0)
+strategy4[is.na(strategy4)] <-0
+
+#Strategy 5
+#use macd and bollinger band, if oversold and price is higher than bollinger lower boundary, enter and stay, otherwise exit the market
+strategy5 <- ifelse ((macd$macd<macd$signal) & (MSFT$MSFT.Adjusted>bbands$dn),1,0)
+strategy5[is.na(strategy5)] <-0
+                     
+#Buy and Hold
+bh_strategy <-rep(1,dim(MSFT1)[1])
+```
+
+```{r}
+#define the backtesting function
+backtest <- function(df,from_date,to_date,strategy,strategy_name){
+    rtn.daily <- dailyReturn(df)
+    rtn <- rtn.daily[index(rtn.daily)<=to_date & index(rtn.daily)>=from_date] 
+    trade_return <- rtn * lag(strategy, na.pad = FALSE)  
+    #rnt for days in the market and 0 for days not in the market
+    cumm_return <- Return.cumulative(trade_return)
+    annual_return <- Return.annualized(trade_return) 
+    summary(as.ts(trade_return))
+    SharpeRatio <- SharpeRatio(as.ts(trade_return), Rf = 0, p = 0.95, FUN = "StdDev")
+    SharpeRatioAnnualized <- SharpeRatio.annualized(trade_return, Rf = 0)
+    out <- as.data.frame(c(cumm_return,annual_return,SharpeRatio,SharpeRatioAnnualized))
+    out <- round(out,2)
+    colnames(out) <- strategy_name
+    row.names(out) <- c('Cumulative Return','Annualized Return',
+                 'Sharpe Ratio','Annualized Sharpe Ratio')
+    return( out )
+}
+```
+
+```{r}
+#in-sampling backtesting for msft
+# Strategy 1
+strategy1_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy1,"Strategy1")
+strategy1_performance
+
+#Strategy 2
+strategy2_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy2,"Strategy2")
+strategy2_performance
+
+#Strategy 3
+strategy3_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy3,"Strategy3")
+strategy3_performance
+
+#Strategy 4
+strategy4_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy4,"Strategy4")
+strategy4_performance
+
+#Strategy 5
+strategy5_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy5,"Strategy5")
+strategy5_performance
+
+#bh_strategy
+bh_strategy_performance <- backtest(MSFT, from_date = '2007-01-01', 
+    to_date = '2016-12-31', bh_strategy,"bh_strategy")
+bh_strategy_performance
+```
+```{r}
+#The best strategy based on in-sample backtesting for Microsoft is strategy 2, which is to use macd and rsi, if oversold, enter and stay, otherwise exit the market. This strategy has higher return and sharpe ratio than all other 4 strategies. Its return is only slightly lower than buy and hold strategy but has a much higher sharpe ratio, which suggests it can achieve higher return over per unit of risk taken.
+```
+
+
+```{r}
+#develop the strategies for Macy's
+macd <-MACD(M$M.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+rsi <-RSI(M$M.Adjusted,n=14,maType='SMA')
+cci <-CCI(M$M.Adjusted,n=14,maType='SMA')
+bbands <-BBands(M$M.Adjusted,n=20,maType='SMA',sd=2)
+
+#Strategy 1
+#if macd<signal and macd is negative (oversold), enter and stay, otherwise exit the market
+strategy1 <- ifelse ((macd$macd <macd$signal) & (macd$macd<0) , 1, 0)
+strategy1[is.na(strategy1)] <-0
+
+#Strategy 2
+#use macd and rsi, if oversold, enter and stay, otherwise exit the market
+strategy2 <- ifelse ((macd$macd<macd$signal) & (rsi$rsi<30),1,0)
+strategy2[is.na(strategy2)] <-0
+
+#Strategy 3
+#use macd and cci, if oversold, enter and stay, otherwise exit the market
+strategy3 <- ifelse ((macd$macd<macd$signal) &  (cci$cci< -100),1,0)
+strategy3[is.na(strategy3)] <-0
+
+#Strategy 4
+#use rsi and cci, if oversold, enter and stay, otherwise exit the market
+strategy4 <- ifelse ((rsi$rsi<30) &  (cci$cci< -100),1,0)
+strategy4[is.na(strategy4)] <-0
+
+#Strategy 5
+#use macd and bollinger band, if oversold and price is higher than bollinger lower boundary, enter and stay, otherwise exit the market
+strategy5 <- ifelse ((macd$macd<macd$signal) & (M$M.Adjusted>bbands$dn),1,0)
+strategy5[is.na(strategy5)] <-0
+                     
+
+#Buy and Hold
+bh_strategy <-rep(1,dim(M1)[1])
+```
+
+
+```{r}
+#in-sampling backtesting for Macy's
+# Strategy 1
+strategy1_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy1,"Strategy1")
+strategy1_performance
+
+#Strategy 2
+strategy2_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy2,"Strategy2")
+strategy2_performance
+
+#Strategy 3
+strategy3_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy3,"Strategy3")
+strategy3_performance
+
+#Strategy 4
+strategy4_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy4,"Strategy4")
+strategy4_performance
+
+#Strategy 5
+strategy5_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy5,"Strategy5")
+strategy5_performance
+
+#bh_strategy
+bh_strategy_performance <- backtest(M, from_date = '2007-01-01', 
+    to_date = '2016-12-31', bh_strategy,"bh_strategy")
+bh_strategy_performance
+```
+
+```{r}
+#The best strategy based on in-sample backtesting for Macy's is strategy 3, which is to use macd and cci, if oversold, enter and stay, otherwise exit the market. Though the returns and sharpe ratios are all negative, it's the best among the 5 strategies suggested. It's worse than the buy and hold strategy, partly because the stock had a downward trend and if entered when oversold, the price actually kept falling and led to more loss.
+```
+
+
+```{r}
+#develop the strategies for Mastercard
+macd <-MACD(MA$MA.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+rsi <-RSI(MA$MA.Adjusted,n=14,maType='SMA')
+cci <-CCI(MA$MA.Adjusted,n=14,maType='SMA')
+bbands <-BBands(MA$MA.Adjusted,n=20,maType='SMA',sd=2)
+
+#Strategy 1
+#if macd<signal and macd is negative (oversold), enter and stay, otherwise exit the market
+strategy1 <- ifelse ((macd$macd<macd$signal) & (macd$macd<0) , 1, 0)
+strategy1[is.na(strategy1)] <-0
+
+#Strategy 2
+#use macd and rsi, if oversold, enter and stay, otherwise exit the market
+strategy2 <- ifelse ((macd$macd<macd$signal) & (rsi$rsi<30),1,0)
+strategy2[is.na(strategy2)] <-0
+
+#Strategy 3
+#use macd and cci, if oversold, enter and stay, otherwise exit the market
+strategy3 <- ifelse ((macd$macd<macd$signal) &  (cci$cci< -100),1,0)
+strategy3[is.na(strategy3)] <-0
+
+#Strategy 4
+#use rsi and cci, if oversold, enter and stay, otherwise exit the market
+strategy4 <- ifelse ((rsi$rsi<30) &  (cci$cci< -100),1,0)
+strategy4[is.na(strategy4)] <-0
+
+#Strategy 5
+#use macd and bollinger band, if oversold and price is higher than bollinger lower boundary, enter and stay, otherwise exit the market
+strategy5 <- ifelse ((macd$macd<macd$signal) & (MA$MA.Adjusted>bbands$dn),1,0)
+strategy5[is.na(strategy5)] <-0
+                     
+
+#Buy and Hold
+bh_strategy <-rep(1,dim(MA1)[1])
+```
+
+
+
+```{r}
+#In-sampling backtesting for Mastercard
+# Strategy 1
+strategy1_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy1,"Strategy1")
+strategy1_performance
+
+#Strategy 2
+strategy2_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date ='2016-12-31', strategy2,"Strategy2")
+strategy2_performance
+
+#Strategy 3
+strategy3_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy3,"Strategy3")
+strategy3_performance
+
+#Strategy 4
+strategy4_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy4,"Strategy4")
+strategy4_performance
+
+#Strategy 5
+strategy5_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date = '2016-12-31', strategy5,"Strategy5")
+strategy5_performance
+
+#bh_strategy
+bh_strategy_performance <- backtest(MA, from_date = '2007-01-01', 
+    to_date ='2016-12-31', bh_strategy,"bh_strategy")
+bh_strategy_performance
+```
+```{r}
+#The best strategy based on in-sample backtesting for Mastercard is strategy 3, which is to use macd and cci, if oversold, enter and stay, otherwise exit the market. It has higher returns and sharpe ratios than the other 4 strategies. This strategy has lower returns than buy and hold strategy but has higher sharpe ratios, which means that it can achieve higher return over per unit of risk taken.
+``` 
+
+
+```{r}
+#out-of-sample test for Microsoft
+macd <-MACD(MSFT$MSFT.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+rsi <-RSI(MSFT$MSFT.Adjusted,n=14,maType='SMA')
+
+#Strategy 2
+#use macd and rsi, if oversold, enter and stay, otherwise exit the market
+strategy2 <- ifelse ((macd$macd<macd$signal) & (rsi$rsi<30),1,0)
+strategy2[is.na(strategy2)] <-0
+
+strategy2_performance <- backtest(MSFT, from_date = '2017-01-01', 
+    to_date = Sys.Date(), strategy2,"Strategy2")
+strategy2_performance
+
+#bh_strategy
+bh_strategy <-rep(1,dim(MSFT2)[1])
+bh_strategy_performance <- backtest(MSFT, from_date = '2017-01-01', 
+    to_date =Sys.Date(), bh_strategy,"bh_strategy")
+bh_strategy_performance
+
+```
+```{r}
+#The out-of-sample test of strategy 2 on Microsoft shows lower returns and sharpe ratios than the buy and hold strategy, which could be explained by the fact that Microsoft has overall a strong upgoing trend during the test period and there's not many times of being oversold. The result shows that strategy 2 performs relatively better when looking at sharpe ratios, which is the same as shown in the in-sample test.
+```
+
+```{r}
+#out-of-sample test for Macy's
+macd <-MACD(M$M.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+cci <-CCI(M$M.Adjusted,n=14,maType='SMA')
+
+#Strategy 3
+strategy3 <- ifelse ((macd$macd<macd$signal) &  (cci$cci< -100),1,0)
+strategy3[is.na(strategy3)] <-0
+
+strategy3_performance <- backtest(M, from_date = '2017-01-01', 
+    to_date = Sys.Date(), strategy3,"Strategy3")
+strategy3_performance
+
+#bh_strategy
+bh_strategy <-rep(1,dim(M2)[1])
+bh_strategy_performance <- backtest(M, from_date = '2017-01-01', 
+    to_date =Sys.Date(), bh_strategy,"bh_strategy")
+bh_strategy_performance
+```
+```{r}
+#The out-of-sample test of strategy 3 on Macy's shows higher returns than the buy and hold strategy and a slightly lower value on sharpe ratio than the buy and hold strategy and all the values are negative. This could be explained by the overall downward trend of Macy's stock over the test period. And the out-of-sample performance is actually better than the in-sample one.
+```
+
+```{r}
+#out-of-sample test for Mastercard
+macd <-MACD(MA$MA.Adjusted,nFast=12,nSlow=26,nSig=9,maType='SMA',percent=FALSE)
+cci <-CCI(MA$MA.Adjusted,n=14,maType='SMA')
+
+#Strategy 3
+strategy3 <- ifelse ((macd$macd<macd$signal) &  (cci$cci< -100),1,0)
+strategy3[is.na(strategy3)] <-0
+
+strategy3_performance <- backtest(MA, from_date = '2017-01-01', 
+    to_date = Sys.Date(), strategy3,"Strategy3")
+strategy3_performance
+
+#bh_strategy
+bh_strategy <-rep(1,dim(MA2)[1])
+bh_strategy_performance <- backtest(MA, from_date = '2017-01-01', 
+    to_date =Sys.Date(), bh_strategy,"bh_strategy")
+bh_strategy_performance
+```
+
+```{r}
+#The out-of-sample test of strategy 3 on Mastercard shows lower return but almost similar sharpe ratios as the buy and hold strategy. This means that similar to the in-sample test, strategy 3 can achieve similar return over per unit of risk taken.
+```
+
+```{r}
+#Overall conclusion: As the strategies I developed are relatively simple, they don't have a strength over the buy and hold strategy, especially for stocks that have a clear growing trend over the time since I chose to enter the market when the stocks are oversold. But these strategies seem more conservative than the buy and hold strategy since the returns are lower than BaH when the stocks perform well and are higher than BaH when the stocks don't perform well. 
+```
+
